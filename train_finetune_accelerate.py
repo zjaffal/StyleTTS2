@@ -12,6 +12,8 @@ import librosa
 import click
 import shutil
 import warnings
+
+from train_utils import AudioSampleLogger, generate_samples, get_speaker_mapping
 warnings.simplefilter('ignore')
 from torch.utils.tensorboard import SummaryWriter
 
@@ -44,6 +46,7 @@ class MyDataParallel(torch.nn.DataParallel):
         
 import logging
 from logging import StreamHandler
+import wandb
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 handler = StreamHandler()
@@ -55,6 +58,7 @@ logger.addHandler(handler)
 @click.option('-p', '--config_path', default='Configs/config_ft.yml', type=str)
 def main(config_path):
     config = yaml.safe_load(open(config_path))
+    wandb.init(project="styletts_core", mode="offline", group="train_finetune_accelerate", sync_tensorboard=True)
     
     log_dir = config['log_dir']
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
@@ -92,6 +96,7 @@ def main(config_path):
     optimizer_params = Munch(config['optimizer_params'])
     
     train_list, val_list = get_data_path_list(train_path, val_path)
+    speaker_mapping = get_speaker_mapping(train_path, val_path)
     device = accelerator.device
 
     train_dataloader = build_dataloader(train_list,
@@ -261,11 +266,12 @@ def main(config_path):
         model.bert.train()
         model.msd.train()
         model.mpd.train()
-
+        if accelerator.is_main_process:
+            train_table = AudioSampleLogger("train_table", speaker_mapping, 5)
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
-            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, speaker_ids = batch
             with torch.no_grad():
                 mask = length_to_mask(mel_input_length // (2 ** n_down)).to(device)
                 mel_mask = length_to_mask(mel_input_length).to(device)
@@ -545,10 +551,24 @@ def main(config_path):
                         optimizer.zero_grad()
                         accelerator.backward(d_loss_slm)
                         optimizer.step('wd')
-
+            
+            # log generated audio and true reference to wandb
+            if accelerator.is_main_process:
+                for bib in range(len(mel_input_length)):
+                    speaker_id = str(
+                        speaker_ids[bib].detach().squeeze().cpu().numpy()
+                    )
+                    speaker_log = train_table.speaker_data[speaker_id]
+                    if len(speaker_log) > train_table.num_per_speaker:
+                        continue
+                    train_table.add_data(
+                        wav[bib].detach().squeeze().cpu().numpy(),
+                        y_rec[bib].detach().squeeze().cpu().numpy(),
+                        speaker_id,
+                )
             iters = iters + 1
             
-            if (i+1)%log_interval == 0:
+            if (i+1)%log_interval == 0 and accelerator.is_main_process:
                 logger.info ('Epoch [%d/%d], Step [%d/%d], Loss: %.5f, Disc Loss: %.5f, Dur Loss: %.5f, CE Loss: %.5f, Norm Loss: %.5f, F0 Loss: %.5f, LM Loss: %.5f, Gen Loss: %.5f, Sty Loss: %.5f, Diff Loss: %.5f, DiscLM Loss: %.5f, GenLM Loss: %.5f, SLoss: %.5f, S2S Loss: %.5f, Mono Loss: %.5f'
                     %(epoch+1, epochs, i+1, len(train_list)//batch_size, running_loss / log_interval, d_loss, loss_dur, loss_ce, loss_norm_rec, loss_F0_rec, loss_lm, loss_gen_all, loss_sty, loss_diff, d_loss_slm, loss_gen_lm, s_loss, loss_s2s, loss_mono))
                 
@@ -569,10 +589,14 @@ def main(config_path):
                 
                 print('Time elasped:', time.time()-start_time)
             
+        if accelerator.is_main_process:
+            train_table.log_info()
+            val_table = AudioSampleLogger("val_table", speaker_mapping)
         loss_test = 0
         loss_align = 0
         loss_f = 0
         _ = [model[key].eval() for key in model]
+    
 
         with torch.no_grad():
             iters_test = 0
@@ -582,7 +606,7 @@ def main(config_path):
                 try:
                     waves = batch[0]
                     batch = [b.to(device) for b in batch[1:]]
-                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, speaker_ids = batch
                     with torch.no_grad():
                         mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
                         text_mask = length_to_mask(input_lengths).to(texts.device)
@@ -675,39 +699,67 @@ def main(config_path):
                     loss_test += (loss_mel).mean()
                     loss_align += (loss_dur).mean()
                     loss_f += (loss_F0).mean()
-
-                    iters_test += 1
+                                        # logging reference and generated audio for wandb
+                    if accelerator.is_main_process:
+                        for bib in range(len(mel_input_length)):
+                            speaker_id = str(
+                                speaker_ids[bib].detach().squeeze().cpu().numpy()
+                            )
+                            speaker_log = val_table.speaker_data[speaker_id]
+                            if len(speaker_log) > val_table.num_per_speaker:
+                                continue
+                            # generate audio using already calculated embeddings.
+                            generated_audio = generate_samples(
+                                model=model,
+                                sampler=sampler,
+                                bib=bib,
+                                ref_s=ref,
+                                t_en=t_en,
+                                d_en=d_en,
+                                texts=texts,
+                                bert_dur=bert_dur,
+                                input_lengths=input_lengths,
+                                text_mask=text_mask,
+                                multispeaker=multispeaker,
+                            )
+                            val_table.add_data(
+                                waves[bib],
+                                generated_audio.detach().squeeze().cpu().numpy(),
+                                speaker_id,
+                            )
+                        iters_test += 1
                 except:
                     continue
 
-        print('Epochs:', epoch + 1)
-        logger.info('Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f' % (loss_test / iters_test, loss_align / iters_test, loss_f / iters_test) + '\n\n\n')
-        print('\n\n\n')
-        writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
-        writer.add_scalar('eval/dur_loss', loss_test / iters_test, epoch + 1)
-        writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
+        if accelerator.is_main_process:
+            print('Epochs:', epoch + 1)
+            logger.info('Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f' % (loss_test / iters_test, loss_align / iters_test, loss_f / iters_test) + '\n\n\n')
+            print('\n\n\n')
+            writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
+            writer.add_scalar('eval/dur_loss', loss_test / iters_test, epoch + 1)
+            writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
+            val_table.log_info()
         
-        
-        if (epoch + 1) % save_freq == 0 :
-            if (loss_test / iters_test) < best_loss:
-                best_loss = loss_test / iters_test
-            print('Saving..')
-            state = {
-                'net':  {key: model[key].state_dict() for key in model}, 
-                'optimizer': optimizer.state_dict(),
-                'iters': iters,
-                'val_loss': loss_test / iters_test,
-                'epoch': epoch,
-            }
-            save_path = osp.join(log_dir, 'epoch_2nd_%05d.pth' % epoch)
-            torch.save(state, save_path)
+            if (epoch + 1) % save_freq == 0 :
+                if (loss_test / iters_test) < best_loss:
+                    best_loss = loss_test / iters_test
+                print('Saving..')
+                state = {
+                    'net':  {key: model[key].state_dict() for key in model}, 
+                    'optimizer': optimizer.state_dict(),
+                    'iters': iters,
+                    'val_loss': loss_test / iters_test,
+                    'epoch': epoch,
+                }
+                save_path = osp.join(log_dir, 'epoch_2nd_%05d.pth' % epoch)
+                torch.save(state, save_path)
 
-            # if estimate sigma, save the estimated simga
-            if model_params.diffusion.dist.estimate_sigma_data:
-                config['model_params']['diffusion']['dist']['sigma_data'] = float(np.mean(running_std))
+                # if estimate sigma, save the estimated simga
+                if model_params.diffusion.dist.estimate_sigma_data:
+                    config['model_params']['diffusion']['dist']['sigma_data'] = float(np.mean(running_std))
 
-                with open(osp.join(log_dir, osp.basename(config_path)), 'w') as outfile:
-                    yaml.dump(config, outfile, default_flow_style=True)
+                    with open(osp.join(log_dir, osp.basename(config_path)), 'w') as outfile:
+                        yaml.dump(config, outfile, default_flow_style=True)
 
                             
 if __name__=="__main__":

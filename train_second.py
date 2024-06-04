@@ -13,6 +13,9 @@ import click
 import shutil
 import traceback
 import warnings
+import wandb
+
+from train_utils import AudioSampleLogger, get_speaker_mapping
 warnings.simplefilter('ignore')
 from torch.utils.tensorboard import SummaryWriter
 
@@ -89,6 +92,7 @@ def main(config_path):
     optimizer_params = Munch(config['optimizer_params'])
     
     train_list, val_list = get_data_path_list(train_path, val_path)
+    speaker_mappings = get_speaker_mapping(train_path, val_path)
     device = 'cuda'
 
     train_dataloader = build_dataloader(train_list,
@@ -256,11 +260,11 @@ def main(config_path):
 
         if epoch >= diff_epoch:
             start_ds = True
-
+        train_table = AudioSampleLogger("train_table", speaker_mappings)
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
-            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, speaker_ids = batch
 
             with torch.no_grad():
                 mask = length_to_mask(mel_input_length // (2 ** n_down)).to(device)
@@ -539,7 +543,20 @@ def main(config_path):
                 d_loss_slm, loss_gen_lm = 0, 0
                 
             iters = iters + 1
-            
+
+            # log generated audio and true reference to wandb
+            for bib in range(len(mel_input_length)):
+                speaker_id = str(
+                    speaker_ids[bib].detach().squeeze().cpu().numpy()
+                )
+                speaker_log = train_table.speaker_data[speaker_id]
+                if len(speaker_log) > train_table.num_per_speaker:
+                    continue
+                train_table.add_data(
+                    wav[bib].detach().squeeze().cpu().numpy(),
+                    y_rec[bib].detach().squeeze().cpu().numpy(),
+                    speaker_id,
+                ) 
             if (i+1)%log_interval == 0:
                 logger.info ('Epoch [%d/%d], Step [%d/%d], Loss: %.5f, Disc Loss: %.5f, Dur Loss: %.5f, CE Loss: %.5f, Norm Loss: %.5f, F0 Loss: %.5f, LM Loss: %.5f, Gen Loss: %.5f, Sty Loss: %.5f, Diff Loss: %.5f, DiscLM Loss: %.5f, GenLM Loss: %.5f'
                     %(epoch+1, epochs, i+1, len(train_list)//batch_size, running_loss / log_interval, d_loss, loss_dur, loss_ce, loss_norm_rec, loss_F0_rec, loss_lm, loss_gen_all, loss_sty, loss_diff, d_loss_slm, loss_gen_lm))
@@ -564,6 +581,8 @@ def main(config_path):
         loss_test = 0
         loss_align = 0
         loss_f = 0
+        train_table.log_info()
+        val_table = AudioSampleLogger("val_table", speaker_mappings)
         _ = [model[key].eval() for key in model]
 
         with torch.no_grad():
@@ -574,7 +593,7 @@ def main(config_path):
                 try:
                     waves = batch[0]
                     batch = [b.to(device) for b in batch[1:]]
-                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, speaker_ids = batch
                     with torch.no_grad():
                         mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
                         text_mask = length_to_mask(input_lengths).to(texts.device)
@@ -670,6 +689,18 @@ def main(config_path):
                     loss_f += (loss_F0).mean()
 
                     iters_test += 1
+                    # log generated audio and true reference to wandb
+                    for bib in range(len(mel_input_length)):
+                        speaker_id = str(
+                            speaker_ids[bib].detach().squeeze().cpu().numpy()
+                        )
+                        speaker_log = train_table.speaker_data[speaker_id]
+                        if len(speaker_log) > train_table.num_per_speaker:
+                            continue
+                        val_table.add_data(
+                            wav[bib].detach().squeeze().cpu().numpy(),
+                            y_rec[bib].detach().squeeze().cpu().numpy(),
+                            speaker_id)
                 except Exception as e:
                     print(f"run into exception", e)
                     traceback.print_exc()
@@ -681,6 +712,7 @@ def main(config_path):
         writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
         writer.add_scalar('eval/dur_loss', loss_align / iters_test, epoch + 1)
         writer.add_scalar('eval/F0_loss', loss_f / iters_test, epoch + 1)
+        val_table.log_info()
         
         if epoch < joint_epoch:
             # generating reconstruction examples with GT duration

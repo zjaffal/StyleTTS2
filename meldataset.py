@@ -226,7 +226,7 @@ class Collater(object):
             ref_labels[bid] = ref_label
             waves[bid] = wave
 
-        return waves, texts, input_lengths, ref_texts, ref_lengths, mels, output_lengths, ref_mels
+        return waves, texts, input_lengths, ref_texts, ref_lengths, mels, output_lengths, ref_mels, labels
 
 
 

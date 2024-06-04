@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import click
 import warnings
+
+from train_utils import AudioSampleLogger, get_speaker_mapping
 warnings.simplefilter('ignore')
 
 # load packages
@@ -37,12 +39,14 @@ from torch.utils.tensorboard import SummaryWriter
 import logging
 from accelerate.logging import get_logger
 logger = get_logger(__name__, log_level="DEBUG")
+import wandb
 
 @click.command()
 @click.option('-p', '--config_path', default='Configs/config.yml', type=str)
 def main(config_path):
     config = yaml.safe_load(open(config_path))
 
+    wandb.init(project="styletts_core", group="train_first", sync_tensorboard=True, mode="offline")
     log_dir = config['log_dir']
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
@@ -77,6 +81,7 @@ def main(config_path):
     
     # load data
     train_list, val_list = get_data_path_list(train_path, val_path)
+    speaker_mappings = get_speaker_mapping(train_path, val_path)
 
     train_dataloader = build_dataloader(train_list,
                                         root_path,
@@ -177,10 +182,12 @@ def main(config_path):
 
         _ = [model[key].train() for key in model]
 
+        if accelerator.is_main_process:
+            train_table = AudioSampleLogger("train_table", speaker_mappings)
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
-            texts, input_lengths, _, _, mels, mel_input_length, _ = batch
+            texts, input_lengths, _, _, mels, mel_input_length, _, speaker_ids = batch
             
             with torch.no_grad():
                 mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
@@ -306,7 +313,22 @@ def main(config_path):
                 optimizer.step('pitch_extractor')
             
             iters = iters + 1
-            
+
+            if accelerator.is_main_process:
+                # log generated audio and true reference to wandb
+                for bib in range(len(mel_input_length)):
+                    speaker_id = str(
+                        speaker_ids[bib].detach().squeeze().cpu().numpy()
+                    )
+                    speaker_log = train_table.speaker_data[speaker_id]
+                    if len(speaker_log) > train_table.num_per_speaker:
+                        continue
+                    train_table.add_data(
+                        wav[bib].detach().squeeze().cpu().numpy(),
+                        y_rec[bib].detach().squeeze().cpu().numpy(),
+                        speaker_id,
+                )
+
             if (i+1)%log_interval == 0 and accelerator.is_main_process:
                 log_print ('Epoch [%d/%d], Step [%d/%d], Mel Loss: %.5f, Gen Loss: %.5f, Disc Loss: %.5f, Mono Loss: %.5f, S2S Loss: %.5f, SLM Loss: %.5f'
                         %(epoch+1, epochs, i+1, len(train_list)//batch_size, running_loss / log_interval, loss_gen_all, d_loss, loss_mono, loss_s2s, loss_slm), logger)
@@ -323,7 +345,10 @@ def main(config_path):
                 print('Time elasped:', time.time()-start_time)
                                 
         loss_test = 0
-
+        if accelerator.is_main_process:
+            train_table.log_info()
+            val_table = AudioSampleLogger("val_table", speaker_mappings)
+        
         _ = [model[key].eval() for key in model]
 
         with torch.no_grad():
@@ -333,7 +358,7 @@ def main(config_path):
 
                 waves = batch[0]
                 batch = [b.to(device) for b in batch[1:]]
-                texts, input_lengths, _, _, mels, mel_input_length, _ = batch
+                texts, input_lengths, _, _, mels, mel_input_length, _, speaker_ids = batch
 
                 with torch.no_grad():
                     mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
@@ -385,6 +410,20 @@ def main(config_path):
                 loss_test += accelerator.gather(loss_mel).mean().item()
                 iters_test += 1
 
+                if accelerator.is_main_process:
+                    # log generated audio and true reference to wandb
+                    for bib in range(len(mel_input_length)):
+                        speaker_id = str(
+                            speaker_ids[bib].detach().squeeze().cpu().numpy()
+                        )
+                        speaker_log = train_table.speaker_data[speaker_id]
+                        if len(speaker_log) > train_table.num_per_speaker:
+                            continue
+                        val_table.add_data(
+                            wav[bib].detach().squeeze().cpu().numpy(),
+                            y_rec[bib].detach().squeeze().cpu().numpy(),
+                            speaker_id)
+        
         if accelerator.is_main_process:
             print('Epochs:', epoch + 1)
             log_print('Validation loss: %.3f' % (loss_test / iters_test) + '\n\n\n\n', logger)
@@ -392,6 +431,7 @@ def main(config_path):
             writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
             attn_image = get_image(s2s_attn[0].cpu().numpy().squeeze())
             writer.add_figure('eval/attn', attn_image, epoch)
+            val_table.log_info()
             
             with torch.no_grad():
                 for bib in range(len(asr)):
