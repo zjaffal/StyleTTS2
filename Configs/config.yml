@@ -1,4 +1,4 @@
-log_dir: "Models/LJSpeech"
+log_dir: "Models/LibriTTSFirst"
 first_stage_path: "first_stage.pth"
 save_freq: 2
 log_interval: 10
@@ -17,9 +17,9 @@ ASR_path: "Utils/ASR/epoch_00080.pth"
 PLBERT_dir: 'Utils/PLBERT/'
 
 data_params:
-  train_data: "Data/train_list.txt"
-  val_data: "Data/val_list.txt"
-  root_path: "/local/LJSpeech-1.1/wavs"
+  train_data: "/home/ubuntu/data/LibriTTS/train_list.txt"
+  val_data: "/home/ubuntu/data/LibriTTS/val_list.txt"
+  root_path: "/home/ubuntu/data/LibriTTS/audio"
   OOD_data: "Data/OOD_texts.txt"
   min_length: 50 # sample until texts with this size are obtained for OOD texts
 
