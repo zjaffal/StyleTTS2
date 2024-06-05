@@ -46,7 +46,7 @@ import wandb
 def main(config_path):
     config = yaml.safe_load(open(config_path))
 
-    wandb.init(project="styletts_core", group="train_first", sync_tensorboard=True, mode="offline")
+    wandb.init(project="styletts_core", group="train_first", sync_tensorboard=True)
     log_dir = config['log_dir']
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
