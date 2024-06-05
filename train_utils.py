@@ -1,6 +1,7 @@
 import wandb
 import torch
 import pandas as pd
+import csv
 
 SAMPLE_RATE=24000
 
@@ -15,14 +16,14 @@ def get_speaker_mapping(train_path, test_path=None):
         Identity mapping of speakers
     """
     speaker_mapping = {}
-    train_df = pd.read_csv(train_path, sep="|", names=["audio", "text", "id"])
+    train_df = pd.read_csv(train_path, sep="|", names=["audio", "text", "id"], usecols=["id"], quoting=csv.QUOTE_NONE)
 
     unique_ids = train_df["id"].astype(str).unique().tolist()
     for id in unique_ids:
         speaker_mapping[id] = id
 
     if test_path:
-        test_df = pd.read_csv(test_path, sep="|", names=["audio", "text", "id"])
+        test_df = pd.read_csv(test_path, sep="|", names=["audio", "text", "id"], usecols=["id"], quoting=csv.QUOTE_NONE)
 
         unique_ids = test_df["id"].astype(str).unique().tolist()
         for id in unique_ids:
