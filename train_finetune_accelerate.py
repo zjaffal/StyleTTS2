@@ -34,8 +34,6 @@ from optimizers import build_optimizer
 
 from accelerate import Accelerator
 
-accelerator = Accelerator()
-
 # simple fix for dataparallel that allows access to class attributes
 class MyDataParallel(torch.nn.DataParallel):
     def __getattr__(self, name):
@@ -61,9 +59,15 @@ def main(config_path):
     wandb.init(project="styletts_core", mode="offline", group="train_finetune_accelerate", sync_tensorboard=True)
     
     log_dir = config['log_dir']
+    accelerator = Accelerator(project_dir=log_dir, split_batches=True, log_with="wandb")    
+    accelerator.init_trackers(
+        project_name="styletts_core", 
+        init_kwargs={"wandb": {"group": "train_finetune", "sync_tensorboard": True}}
+    )
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
-    writer = SummaryWriter(log_dir + "/tensorboard")
+    if accelerator.is_main_process:
+        writer = SummaryWriter(log_dir + "/tensorboard")
 
     # write logs
     file_handler = logging.FileHandler(osp.join(log_dir, 'train.log'))
