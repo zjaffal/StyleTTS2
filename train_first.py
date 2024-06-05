@@ -52,6 +52,7 @@ def main(config_path):
     accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs], log_with="wandb")    
     accelerator.init_trackers(
         project_name="styletts_core", 
+        config=config,
         init_kwargs={"wandb": {"group": "train_first", "sync_tensorboard": True}}
     )
     if accelerator.is_main_process:

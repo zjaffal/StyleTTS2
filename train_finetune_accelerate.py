@@ -62,6 +62,7 @@ def main(config_path):
     accelerator = Accelerator(project_dir=log_dir, split_batches=True, log_with="wandb")    
     accelerator.init_trackers(
         project_name="styletts_core", 
+        config=config,
         init_kwargs={"wandb": {"group": "train_finetune", "sync_tensorboard": True}}
     )
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
