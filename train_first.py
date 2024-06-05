@@ -45,13 +45,15 @@ import wandb
 @click.option('-p', '--config_path', default='Configs/config.yml', type=str)
 def main(config_path):
     config = yaml.safe_load(open(config_path))
-
-    wandb.init(project="styletts_core", group="train_first", sync_tensorboard=True)
     log_dir = config['log_dir']
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs])    
+    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs], log_with="wandb")    
+    accelerator.init_trackers(
+        project_name="styletts_core", 
+        init_kwargs={"wandb": {"group": "train_first", "sync_tensorboard": True, "mode": "offline"}}
+    )
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
 
