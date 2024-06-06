@@ -53,7 +53,7 @@ def main(config_path):
     accelerator.init_trackers(
         project_name="styletts_core", 
         config=config,
-        init_kwargs={"wandb": {"group": "train_first", "sync_tensorboard": True}}
+        init_kwargs={"wandb": {"entity": "georgian-polyai", "group": "train_first", "sync_tensorboard": True}}
     )
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
