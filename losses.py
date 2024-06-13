@@ -30,7 +30,6 @@ class STFTLoss(torch.nn.Module):
         self.fft_size = fft_size
         self.shift_size = shift_size
         self.win_length = win_length
-        self.to_mel = torchaudio.transforms.MelSpectrogram(sample_rate=24000, n_fft=fft_size, win_length=win_length, hop_length=shift_size, window_fn=window)
 
         self.spectral_convergenge_loss = SpectralConvergengeLoss()
 
@@ -43,13 +42,11 @@ class STFTLoss(torch.nn.Module):
             Tensor: Spectral convergence loss value.
             Tensor: Log STFT magnitude loss value.
         """
-        x_mag = self.to_mel(x)
         mean, std = -4, 4
-        x_mag = (torch.log(1e-5 + x_mag) - mean) / std
+        x_mag = (torch.log(1e-5 + x) - mean) / std
         
-        y_mag = self.to_mel(y)
         mean, std = -4, 4
-        y_mag = (torch.log(1e-5 + y_mag) - mean) / std
+        y_mag = (torch.log(1e-5 + y) - mean) / std
         
         sc_loss = self.spectral_convergenge_loss(x_mag, y_mag)    
         return sc_loss
@@ -148,14 +145,10 @@ def generator_TPRLS_loss(disc_real_outputs, disc_generated_outputs):
 
 class GeneratorLoss(torch.nn.Module):
 
-    def __init__(self, mpd, msd):
+    def __init__(self):
         super(GeneratorLoss, self).__init__()
-        self.mpd = mpd
-        self.msd = msd
         
-    def forward(self, y, y_hat):
-        y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = self.mpd(y, y_hat)
-        y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = self.msd(y, y_hat)
+    def forward(self, y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g,y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g):
         loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
         loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
         loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
@@ -169,17 +162,12 @@ class GeneratorLoss(torch.nn.Module):
     
 class DiscriminatorLoss(torch.nn.Module):
 
-    def __init__(self, mpd, msd):
+    def __init__(self):
         super(DiscriminatorLoss, self).__init__()
-        self.mpd = mpd
-        self.msd = msd
         
-    def forward(self, y, y_hat):
-        # MPD
-        y_df_hat_r, y_df_hat_g, _, _ = self.mpd(y, y_hat)
+    def forward(self, y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g,y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g):
         loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
-        # MSD
-        y_ds_hat_r, y_ds_hat_g, _, _ = self.msd(y, y_hat)
+
         loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
         
         loss_rel = discriminator_TPRLS_loss(y_df_hat_r, y_df_hat_g) + discriminator_TPRLS_loss(y_ds_hat_r, y_ds_hat_g)

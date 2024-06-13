@@ -147,9 +147,15 @@ def main(config_path):
     
     # DDP
     for k in model:
-        model[k] = accelerator.prepare(model[k])
+        if k != "wd":
+            model[k] = accelerator.prepare(model[k])
     model.predictor._set_static_graph()
+    wl = WavLMLoss(model_params.slm.model, 
+                   model.wd, 
+                   sr, 
+                   model_params.slm.sr).to(device)
 
+    wl = accelerator.prepare(wl)
     
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
@@ -180,16 +186,8 @@ def main(config_path):
         else:
             raise ValueError('You need to specify the path to the first stage model.') 
 
-    gl = GeneratorLoss(model.mpd, model.msd).to(device)
-    dl = DiscriminatorLoss(model.mpd, model.msd).to(device)
-    wl = WavLMLoss(model_params.slm.model, 
-                   model.wd, 
-                   sr, 
-                   model_params.slm.sr).to(device)
-
-    gl = accelerator.prepare(gl)
-    dl = accelerator.prepare(dl)
-    wl = accelerator.prepare(wl)
+    gl = GeneratorLoss()
+    dl = DiscriminatorLoss()
     
     try:
         n_down = model.text_aligner.module.n_down
@@ -253,8 +251,9 @@ def main(config_path):
     criterion = nn.L1Loss() # F0 loss (regression)
     torch.cuda.empty_cache()
     
-    stft_loss = MultiResolutionSTFTLoss().to(device)
-    stft_loss = accelerator.prepare(stft_loss)
+    to_mel = torchaudio.transforms.MelSpectrogram(sample_rate=24000, n_fft=1024, win_length=600, hop_length=120, window_fn=torch.hann_window)
+    to_mel = accelerator.prepare(to_mel)
+    stft_loss = MultiResolutionSTFTLoss()
     
     print(optimizer.optimizers['bert'])
     
@@ -420,7 +419,9 @@ def main(config_path):
 
             if start_ds:
                 optimizer.zero_grad()
-                d_loss = dl(wav.detach(), y_rec.detach()).mean()
+                y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = model.mpd(wav.detach(), y_rec.detach()) 
+                y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = model.msd(wav.detach(), y_rec.detach())
+                d_loss = dl(y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g ,y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g).mean()
                 accelerator.backward(d_loss)
                 optimizer.step('msd')
                 optimizer.step('mpd')
@@ -430,9 +431,13 @@ def main(config_path):
             # generator loss
             optimizer.zero_grad()
 
-            loss_mel = stft_loss(y_rec, wav)
+            y_mel = to_mel(y_rec)
+            wav_mel = to_mel(wav)
+            loss_mel = stft_loss(y_mel, wav_mel)
             if start_ds:
-                loss_gen_all = gl(wav, y_rec).mean()
+                y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = model.mpd(wav, y_rec) 
+                y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = model.msd(wav, y_rec)
+                loss_gen_all = gl(y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g ,y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g ).mean()
             else:
                 loss_gen_all = 0
             loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
@@ -606,7 +611,9 @@ def main(config_path):
                     s = model.style_encoder(gt.unsqueeze(1))
 
                     y_rec = model.decoder(en, F0_fake, N_fake, s)
-                    loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
+                    y_rec_mel = to_mel(y_rec.squeeze())
+                    wav_mel = to_mel(wav.detach())
+                    loss_mel = stft_loss(y_rec_mel, wav_mel)
 
                     F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1)) 
 
