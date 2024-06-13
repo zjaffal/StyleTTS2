@@ -322,6 +322,11 @@ def main(config_path):
             bert_dur = model.bert(texts, attention_mask=(~text_mask).int())
             d_en = model.bert_encoder(bert_dur).transpose(-1, -2) 
             
+            # compute reference styles
+            if epoch >= diff_epoch and multispeaker:
+                ref_ss = model.style_encoder(ref_mels.unsqueeze(1))
+                ref_sp = model.predictor_encoder(ref_mels.unsqueeze(1))
+                ref = torch.cat([ref_ss, ref_sp], dim=1)
             # denoiser training
             if epoch >= diff_epoch:
                 num_steps = np.random.randint(3, 5)
@@ -449,19 +454,14 @@ def main(config_path):
             loss_ce /= texts.size(0)
             loss_dur /= texts.size(0)
 
-            # g_loss = loss_params.lambda_mel * loss_mel + \
-            #          loss_params.lambda_F0 * loss_F0_rec + \
-            #          loss_params.lambda_ce * loss_ce + \
-            #          loss_params.lambda_norm * loss_norm_rec + \
-            #          loss_params.lambda_dur * loss_dur + \
-            #          loss_params.lambda_gen * loss_gen_all + \
-            #          loss_params.lambda_slm * loss_lm
-
-            g_loss = loss_params.lambda_ce * loss_ce + \
+            g_loss = loss_params.lambda_mel * loss_mel + \
+                     loss_params.lambda_F0 * loss_F0_rec + \
+                     loss_params.lambda_ce * loss_ce + \
                      loss_params.lambda_norm * loss_norm_rec + \
                      loss_params.lambda_dur * loss_dur + \
                      loss_params.lambda_gen * loss_gen_all + \
                      loss_params.lambda_slm * loss_lm
+
             running_loss += accelerator.gather(loss_mel).mean().item()
             
             with torch.autograd.set_detect_anomaly(True):
@@ -521,7 +521,7 @@ def main(config_path):
                 try:
                     waves = batch[0]
                     batch = [b.to(device) for b in batch[1:]]
-                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, speaker_ids = batch
                     with torch.no_grad():
                         mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
                         text_mask = length_to_mask(input_lengths).to(texts.device)
@@ -617,8 +617,8 @@ def main(config_path):
                     loss_f += accelerator.gather(loss_F0).mean()
 
                     iters_test += 1
-                except:
-                    continue
+                except Exception:
+                   raise Exception 
         if accelerator.is_main_process:
 
             print('Epochs:', epoch + 1)
