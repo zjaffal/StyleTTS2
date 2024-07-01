@@ -14,6 +14,7 @@ import shutil
 import warnings
 
 warnings.simplefilter("ignore")
+import wandb
 from torch.utils.tensorboard import SummaryWriter
 
 from meldataset import build_dataloader
@@ -34,7 +35,7 @@ from accelerate.utils import LoggerType
 from accelerate import DistributedDataParallelKwargs
 
 from torch.utils.tensorboard import SummaryWriter
-
+import wandb
 import logging
 from accelerate.logging import get_logger
 
@@ -79,8 +80,18 @@ def main(config_path):
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
-        project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs]
+        project_dir=log_dir,
+        split_batches=True,
+        kwargs_handlers=[ddp_kwargs],
+        log_with="wandb",
     )
+
+    accelerator.init_trackers(
+        project_name="styletts_core_train_second",
+        config=config,
+        init_kwargs={"wandb": {"entity": "georgian-polyai", "sync_tensorboard": True}},
+    )
+
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
 
@@ -167,7 +178,7 @@ def main(config_path):
     model.predictor._set_static_graph()
     wl = WavLMLoss(model_params.slm.model, model.wd, sr, model_params.slm.sr).to(device)
 
-    # wl = accelerator.prepare(wl)
+    wl = accelerator.prepare(wl)
 
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
@@ -715,8 +726,7 @@ def main(config_path):
                         )
 
                         y = waves[bib][
-                            (random_start * 2)
-                            * 300 : ((random_start + mel_len) * 2)
+                            (random_start * 2) * 300 : ((random_start + mel_len) * 2)
                             * 300
                         ]
                         wav.append(torch.from_numpy(y).to(device))
@@ -767,7 +777,6 @@ def main(config_path):
                 except Exception:
                     raise Exception
         if accelerator.is_main_process:
-
             print("Epochs:", epoch + 1)
             print(
                 "Validation loss: %.3f, Dur loss: %.3f, F0 loss: %.3f"
