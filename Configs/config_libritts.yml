@@ -7,9 +7,9 @@ epochs_1st: 50 # number of epochs for first stage training (pre-training)
 epochs_2nd: 30 # number of peochs for second stage training (joint training)
 batch_size: 8 
 max_len: 300 # maximum number of frames
-pretrained_model: ""
+pretrained_model: "/home/ubuntu/projects/StyleTTS2/Models/libritts/epochs_2nd_00020.pth"
 second_stage_load_pretrained: true # set to true if the pre-trained model is for 2nd stage
-load_only_params: false # set to true if do not want to load epoch numbers and optimizer parameters
+load_only_params: true # set to true if do not want to load epoch numbers and optimizer parameters
 
 F0_path: "Utils/JDC/bst.t7"
 ASR_config: "Utils/ASR/config.yml"
@@ -17,9 +17,9 @@ ASR_path: "Utils/ASR/epoch_00080.pth"
 PLBERT_dir: 'Utils/PLBERT/'
 
 data_params:
-  train_data: "Data/train_list.txt"
-  val_data: "Data/val_list.txt"
-  root_path: "/home/ubuntu/data"
+  train_data: "/mnt/training_data/shelley_hybrid/styletts/train.csv"
+  val_data: "/mnt/training_data/shelley_hybrid/styletts/val.csv"
+  root_path: "/mnt/training_data/shelley_hybrid/audios"
   OOD_data: "Data/OOD_texts.txt"
   min_length: 50 # sample until texts with this size are obtained for OOD texts
 
@@ -95,8 +95,8 @@ loss_params:
     lambda_sty: 1. # style reconstruction loss (2nd stage)
     lambda_diff: 1. # score matching loss (2nd stage)
     
-    diff_epoch: 10 # style diffusion starting epoch (2nd stage)
-    joint_epoch: 15 # joint training starting epoch (2nd stage)
+    diff_epoch: 0 # style diffusion starting epoch (2nd stage)
+    joint_epoch: 0 # joint training starting epoch (2nd stage)
 
 optimizer_params:
   lr: 0.0001 # general learning rate

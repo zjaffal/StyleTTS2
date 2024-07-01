@@ -167,7 +167,7 @@ def main(config_path):
     model.predictor._set_static_graph()
     wl = WavLMLoss(model_params.slm.model, model.wd, sr, model_params.slm.sr).to(device)
 
-    wl = accelerator.prepare(wl)
+    # wl = accelerator.prepare(wl)
 
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
